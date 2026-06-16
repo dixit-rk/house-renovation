@@ -314,32 +314,51 @@ git push origin main
    - **Environment:** `VITE_API_BASE_URL=<your-railway-url>`
 5. Deploy
 
-### Step 3: Deploy Backend (Railway)
+### Step 3: Deploy Backend (Railway) — Docker Container Approach
+
+**Key Change:** Web server and Celery worker now run in **ONE Docker container** to share the `/app/storage` volume.
 
 1. **Go to [railway.app](https://railway.app)**
 2. **Sign in with GitHub**
 3. **Create new Project** → "Deploy from GitHub repo"
 4. **Select repository:** `dixit-rk/house-renovation`
-5. **Configure root directory:** `./backend`
-6. **Click Deploy** (will use Procfile automatically)
+5. **Railway will auto-detect `backend/Dockerfile`** ✅
+6. **Click Deploy**
 
-#### Procfile Configuration
-The `backend/Procfile` tells Railway how to run the app:
+#### Why This Works
+- `backend/Dockerfile` builds a single container with both processes
+- `backend/start.sh` runs migrations, then starts Uvicorn + Celery worker together
+- Both processes share `/app/storage` volume automatically (no coordination needed)
+- Files uploaded by Uvicorn are immediately accessible to Celery worker ✅
+
+**Dockerfile Details:**
+```dockerfile
+FROM python:3.10.6-slim
+WORKDIR /app
+RUN pip install -r requirements.txt
+COPY . .
+CMD ["/app/start.sh"]  # Runs both web & worker
 ```
-web: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-worker: celery -A app.workers.celery_app worker --loglevel=info
+
+**start.sh:**
+```bash
+alembic upgrade head  # Run migrations first
+uvicorn app.main:app --host 0.0.0.0 --port $PORT &
+celery -A app.workers.celery_app worker --loglevel=info &
+wait  # Keep container alive
 ```
 
 #### Add Database & Cache Services
+
 After deployment starts:
-1. Go to Project → Add Service
+1. Go to Project → **Add Service** → Plugin
 2. Add **PostgreSQL** plugin
 3. Add **Redis** plugin
-4. Railway auto-generates connection strings
+4. Railway auto-generates `DATABASE_URL` and `REDIS_URL` ✅
 
 ### Step 4: Set Environment Variables on Railway
 
-Go to Project Settings → Environment Variables and add:
+Go to Project Settings → **Variables** and add:
 
 ```env
 DATABASE_URL=<auto-filled by Railway PostgreSQL>
@@ -350,16 +369,26 @@ STORAGE_UPLOAD_DIR=storage/uploads
 STORAGE_GENERATED_DIR=storage/generated
 STORAGE_REPORTS_DIR=storage/reports
 HF_IMAGE_MODEL=stabilityai/sd-turbo
+IMAGE_MAX_SIZE=512
+IMAGE_STEPS=4
+IMAGE_STRENGTH=0.6
+GROQ_VISION_MODEL=meta-llama/llama-4-scout-17b-16e-instruct
 ```
 
-### Step 5: Deploy Celery Worker
+### Step 5: Monitor Deployment
 
-In Railway Project:
-1. **Add Service** → GitHub repo
-2. Select same `dixit-rk/house-renovation` repo
-3. **Root Directory:** `./backend`
-4. **Start command:** `celery -A app.workers.celery_app worker --loglevel=info`
-5. Deploy as background worker
+Watch the **Logs** tab in Railway dashboard. You should see:
+```
+[inf] Mounting volume on: /var/lib/containers/railwayapp/...
+[inf] Starting Container
+[inf] INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+[inf] INFO:     Started server process [3]
+[inf] INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+[inf] -------------- celery@... v5.4.0
+[inf] celery@... ready.
+```
+
+✅ Both web and worker are **running in the same container**!
 
 ### Step 6: Update Frontend Environment
 
@@ -367,29 +396,27 @@ In Railway Project:
 2. Select **house-renovation** project
 3. Go to **Settings** → **Environment Variables**
 4. Update `VITE_API_BASE_URL`:
-   - Get Railway backend URL from Railway dashboard
-   - Format: `https://your-railway-backend.up.railway.app`
-5. **Redeploy** Vercel project
-
-#### Example Vercel Environment Update
-```env
-VITE_API_BASE_URL=https://house-renovation-prod.up.railway.app
-```
+   ```env
+   VITE_API_BASE_URL=https://your-railway-backend.up.railway.app
+   ```
+5. Click **Redeploy**
 
 ### Step 7: Verify Deployment
 
-Test the live API:
+**Test Backend Health:**
 ```bash
-curl https://house-renovation-prod.up.railway.app/health
-# Should return: {"success": true, "msg": "OK", "data": null}
+curl https://your-railway-backend.up.railway.app/health
+# Response: {"success": true, "msg": "OK", "data": null}
 ```
 
-Visit frontend:
-```
-https://house-renovation-nine.vercel.app/
-```
+**Test Full Stack:**
+1. Visit: https://house-renovation-nine.vercel.app/
+2. Upload an exterior house photo
+3. Wait for image processing (Celery worker processes in same container)
+4. See detected zones, material suggestions, renovation preview
+5. Download PDF report
 
-Should now connect to Railway backend! ✅
+✅ **End-to-end deployment complete!**
 
 ---
 
