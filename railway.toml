@@ -1,5 +1,0 @@
-[services.web]
-volumes = ["/app/storage:house-renovation-volume"]
-
-[services.worker]
-volumes = ["/app/storage:house-renovation-volume"]
